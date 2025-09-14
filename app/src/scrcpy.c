@@ -441,13 +441,7 @@ init_sdl_gamepads(void) {
 
 enum scrcpy_exit_code
 scrcpy(struct scrcpy_options *options) {
-    static struct scrcpy scrcpy;
-#ifndef NDEBUG
-    // Detect missing initializations
-    memset(&scrcpy, 42, sizeof(scrcpy));
-#endif
-    struct scrcpy *s = &scrcpy;
-
+    struct scrcpy *s = &g_scrcpy;
     // Minimal SDL initialization
     if (SDL_Init(SDL_INIT_EVENTS)) {
         LOGE("Could not initialize SDL: %s", SDL_GetError());
