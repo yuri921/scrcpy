@@ -7,11 +7,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
 
 #ifdef _WIN32
 // not needed here, but winsock2.h must never be included AFTER windows.h
 # include <winsock2.h>
 # include <windows.h>
+#define WM_MY_CUSTOM_MSG (WM_USER + 100)
+static LRESULT CALLBACK CustomWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static WNDPROC originalWndProc = NULL;
 #endif
 
 #include "audio_player.h"
@@ -90,6 +94,7 @@ struct scrcpy {
     };
     struct sc_timeout timeout;
 };
+static struct scrcpy g_scrcpy;
 
 #ifdef _WIN32
 static BOOL WINAPI windows_ctrl_handler(DWORD ctrl_type) {
@@ -172,6 +177,63 @@ sdl_configure(bool video_playback, bool disable_screensaver) {
         SDL_DisableScreenSaver();
     } else {
         SDL_EnableScreenSaver();
+    }
+}
+
+static LRESULT CALLBACK CustomWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+
+    switch (msg) {
+    case WM_MY_CUSTOM_MSG:
+    {
+        uint16_t z = (uint16_t)(wParam);
+        uint16_t x = (uint16_t)(lParam & 0xFFFF);
+        uint16_t y = (uint16_t)((lParam >> 16) & 0xFFFF);
+
+        struct scrcpy* s = &g_scrcpy;
+        struct sc_size screen_size = s->screen.frame_size;
+
+        // 确保坐标在屏幕范围内
+        if (x < 0 || x >= screen_size.width || y < 0 || y >= screen_size.height) {
+
+            return 0;
+        }
+        LOGI("Invalid touch coordinates: (%d, %d) (screen size: %dx%d)",
+            x, y, screen_size.width, screen_size.height);
+
+
+        struct sc_position position;
+        position.point.x =x;
+        position.point.y = y;
+        position.screen_size.height= screen_size.height;
+        position.screen_size.width = screen_size.width;
+        enum android_motionevent_action action = AMOTION_EVENT_ACTION_DOWN;
+        if (z == 1) {
+            action = AMOTION_EVENT_ACTION_UP;
+        }
+        if (z == 2) {
+            action = AMOTION_EVENT_ACTION_MOVE;
+        }
+
+        struct sc_control_msg msg = {
+            .type = SC_CONTROL_MSG_TYPE_INJECT_TOUCH_EVENT,
+            .inject_touch_event = {
+                .action = action,
+                .action_button = AMOTION_EVENT_BUTTON_PRIMARY,
+                .buttons = AMOTION_EVENT_BUTTON_PRIMARY,
+                .pointer_id = 0,
+                .position = position,
+                .pressure = 1.0f,
+            },
+        };
+        if (!sc_controller_push_msg(&s->controller, &msg)) {
+            LOGW("Could not request 'inject mouse motion event'");
+        }
+        return 0;
+
+    }
+    default:
+        // 其他消息交给原始窗口过程处理
+        return CallWindowProc(originalWndProc, hwnd, msg, wParam, lParam);
     }
 }
 
@@ -830,7 +892,24 @@ aoa_complete:
             goto end;
         }
         screen_initialized = true;
-
+#ifdef _WIN32
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        SDL_Window* sdl_window = s->screen.window;
+        if (SDL_GetWindowWMInfo(sdl_window, &wmInfo)) {
+            HWND hwnd = wmInfo.info.win.window;
+            if (hwnd) {
+                // 保存原始窗口过程并设置自定义过程
+                originalWndProc = (WNDPROC)SetWindowLongPtr(hwnd, GWLP_WNDPROC, (LONG_PTR)CustomWndProc);
+                if (!originalWndProc) {
+                    LOGW("Failed to set custom window procedure");
+                }
+                else {
+                    LOGI("Custom window procedure set successfully");
+                }
+            }
+        }
+#endif
         if (options->video_playback) {
             struct sc_frame_source *src = &s->video_decoder.frame_source;
             if (options->video_buffer) {
